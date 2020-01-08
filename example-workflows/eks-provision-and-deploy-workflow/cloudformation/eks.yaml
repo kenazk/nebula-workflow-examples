@@ -1,0 +1,35 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  ClusterName: 
+    Type: String
+    Description: The name of the EKS cluster
+  ClusterRoleArn: 
+    Type: String
+    Description: Role Arn used for creating the kubernetes cluster
+  SecurityGroups:
+    Type: String
+    Description: The security groups from the VPC that was created
+  Subnets:
+    Type: String
+    Description: The subnets created in the VPC
+
+
+Resources:  
+  NebulaCluster:
+    Type: 'AWS::EKS::Cluster'
+    Properties:
+      Name: !Ref ClusterName
+      Version: '1.14'
+      RoleArn: !Ref ClusterRoleArn
+      ResourcesVpcConfig:
+        SecurityGroupIds: !Split [",", !Ref SecurityGroups]
+        SubnetIds: !Split [",", !Ref Subnets]
+
+Outputs:
+  CAData:
+    Description: The CA Data of the newly created cluster
+    Value: !GetAtt NebulaCluster.CertificateAuthorityData
+  Endpoint:
+    Description: The endpoint of the newly created cluster
+    Value: !GetAtt NebulaCluster.Endpoint

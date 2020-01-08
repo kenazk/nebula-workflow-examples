@@ -1,0 +1,114 @@
+version: v1
+
+parameters:
+  region: 
+    description: The region you'd like your EKS cluster created in
+  slack_channel:
+    description: Slack channel (include preceding hashtag)
+  slack_message:
+    default: The EKS Nebula example has succeeded
+    description: Slack message
+  stack_name_prefix: 
+    description: The prefix for the stacks created in AWS
+  cluster_name:
+    default: project-nebula-example-eks-cluster
+    description: The name of the EKS cluster in AWS
+
+steps:
+  - name: provision-iam-roles
+    image: projectnebula/cloudformation-deployer
+    spec:
+      aws: &aws
+        accessKeyID: !Secret aws_access_key_id
+        secretAccessKey: !Secret aws_secret_access_key
+        region: !Parameter region
+      git: &git
+        name: nebula-workflow-examples
+        branch: tasks/eks-workflow-example
+        repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      stackName: !Fn.concat [!Parameter stack_name_prefix, -iam-roles]
+      templateFile: example-workflows/eks-provision-and-deploy-workflow/cloudformation/iam-roles.yaml
+      capabilities: 
+        - CAPABILITY_NAMED_IAM
+  - name: provision-vpc
+    image: projectnebula/cloudformation-deployer
+    spec: 
+      aws: *aws
+      git: *git
+      stackName: !Fn.concat [!Parameter stack_name_prefix, -vpc]
+      templateFile: example-workflows/eks-provision-and-deploy-workflow/cloudformation/vpc.yaml
+  - name: provision-eks-cluster
+    image: projectnebula/cloudformation-deployer
+    dependsOn: 
+      - provision-iam-roles
+      - provision-vpc
+    spec: 
+      aws: *aws
+      git: *git
+      stackName: !Fn.concat [!Parameter stack_name_prefix, -eks-cluster]
+      templateFile: example-workflows/eks-provision-and-deploy-workflow/cloudformation/eks.yaml
+      parameters: 
+        ClusterName: !Parameter cluster_name
+        ClusterRoleArn: !Output [provision-iam-roles, ClusterRoleArn]
+        SecurityGroups: !Output [provision-vpc, SecurityGroups]
+        Subnets: !Output [provision-vpc, Subnets]
+  - name: provision-eks-node-groups
+    image: projectnebula/cloudformation-deployer
+    dependsOn: provision-eks-cluster
+    spec: 
+      aws: *aws
+      git: *git
+      stackName: !Fn.concat [!Parameter stack_name_prefix, -eks-cluster-nodes]
+      templateFile: example-workflows/eks-provision-and-deploy-workflow/cloudformation/managed-nodes.yaml
+      parameters: 
+        ClusterControlPlaneSecurityGroup: !Output [provision-vpc, SecurityGroups]
+        ClusterName: !Parameter cluster_name
+        NodeInstanceRole: !Output [provision-iam-roles, NodeInstanceRole]
+        Subnets: !Output [provision-vpc, Subnets]
+        VpcId: !Output [provision-vpc, VpcId]
+      capabilities: 
+        - CAPABILITY_IAM
+  - name: pull-kubernetes-token
+    image: projectnebula/core
+    dependsOn: provision-eks-node-groups
+    input: 
+      - apk add --update python python-dev py-pip build-base 
+      - pip install awscli
+      - AWS="${AWS:-aws}"
+      - JQ="${JQ:-jq}"
+      - NI="${NI:-ni}"
+      - WORKDIR="${WORKDIR:-/workspace}"
+      - ni aws config -d "${WORKDIR}/.aws"
+      - eval "$( ni aws env -d "${WORKDIR}/.aws" )"
+      - CLUSTER_NAME="$(ni get -p {.clusterName})"
+      - echo $CLUSTER_NAME
+      - EKS_TOKEN_OBJECT="$(aws eks get-token --cluster-name $CLUSTER_NAME)"
+      - echo $EKS_TOKEN_OBJECT
+      - TOKEN="$( echo "$EKS_TOKEN_OBJECT" | $JQ -r 'try .status.token' )"
+      - echo $TOKEN
+      - ni output set --key "EKS_TOKEN" --value "${TOKEN}" 
+    spec: 
+      aws: *aws
+      clusterName: !Parameter cluster_name
+  - name: deploy-with-kubectl
+    image: projectnebula/kubectl
+    spec:
+      git: *git
+      command: apply
+      file: example-workflows/eks-provision-and-deploy-workflow/deploy/deploy.yaml
+      namespace: default
+      cluster:
+        name: !Parameter cluster_name
+        url: !Output [provision-eks-cluster, Endpoint]
+        cadata: !Output [provision-eks-cluster, CAData]
+        token: !Output [pull-kubernetes-token, EKS_TOKEN]
+  - name: notify-via-slack
+    image: projectnebula/slack-notification
+    dependsOn: deploy-with-kubectl
+    spec: 
+      apitoken: !Secret slack_token
+      channel: !Parameter slack_channel
+      message: !Parameter slack_message
+
+      
+
