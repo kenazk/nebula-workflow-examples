@@ -7,7 +7,7 @@
     EksServiceRole:
       Type: AWS::IAM::Role
       Properties:
-        RoleName: geoffs-custom-stack-eks-role
+        RoleName: !Sub "${AWS::StackName}-eks-role"
         AssumeRolePolicyDocument:
           Version: '2012-10-17'
           Statement:
