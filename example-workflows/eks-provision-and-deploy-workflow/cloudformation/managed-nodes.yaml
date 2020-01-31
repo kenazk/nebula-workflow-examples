@@ -1,0 +1,23 @@
+Parameters:
+  ClusterName:
+    Type: String
+    Description: The cluster name provided when the cluster was created. If it is incorrect, nodes will not be able to join the cluster.
+  NodeInstanceRole:
+    Type: String
+    Description: IAM role for the node instances
+  Subnets:
+    Type: String
+    Description: The subnets where workers can be created.
+
+Resources: 
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties: 
+      ClusterName: !Ref ClusterName
+      NodegroupName: !Sub ${ClusterName}-NodeGroup
+      NodeRole: !Ref NodeInstanceRole
+      Subnets: !Split [",", !Ref Subnets]
+      Labels: 
+        lifetime: 1d
+        organization: engineering
+        portfolio: nebula
