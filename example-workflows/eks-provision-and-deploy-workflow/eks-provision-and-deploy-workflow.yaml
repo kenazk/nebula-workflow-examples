@@ -74,9 +74,6 @@ steps:
     input: 
       - apk add --update python python-dev py-pip build-base 
       - pip install awscli
-      - AWS="${AWS:-aws}"
-      - JQ="${JQ:-jq}"
-      - NI="${NI:-ni}"
       - WORKDIR="${WORKDIR:-/workspace}"
       - ni aws config -d "${WORKDIR}/.aws"
       - eval "$( ni aws env -d "${WORKDIR}/.aws" )"
@@ -84,7 +81,7 @@ steps:
       - echo $CLUSTER_NAME
       - EKS_TOKEN_OBJECT="$(aws eks get-token --cluster-name $CLUSTER_NAME)"
       - echo $EKS_TOKEN_OBJECT
-      - TOKEN="$( echo "$EKS_TOKEN_OBJECT" | $JQ -r 'try .status.token' )"
+      - TOKEN="$( echo "$EKS_TOKEN_OBJECT" | jq -r 'try .status.token' )"
       - echo $TOKEN
       - ni output set --key "EKS_TOKEN" --value "${TOKEN}" 
     spec: 
