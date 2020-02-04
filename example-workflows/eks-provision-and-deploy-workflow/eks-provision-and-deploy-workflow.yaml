@@ -24,7 +24,6 @@ steps:
         region: !Parameter region
       git: &git
         name: nebula-workflow-examples
-        branch: tasks/eks-workflow-example
         repository: https://github.com/puppetlabs/nebula-workflow-examples.git
       stackName: !Fn.concat [!Parameter stack_name_prefix, -iam-roles]
       templateFile: example-workflows/eks-provision-and-deploy-workflow/cloudformation/iam-roles.yaml
