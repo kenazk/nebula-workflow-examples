@@ -44,6 +44,7 @@ steps:
   spec: 
     apitoken: !Secret slack-token 
     channel: "#nebula-workflows"
-    message: !Fn.concat ["[EC2 Reaper Dry Run] Instances that would be terminated: ", !Output {from: filter-instances, name: instanceIDs}]
+    # message: !Fn.concat ["[EC2 Reaper Dry Run] Instances that would be terminated: ", !Output {from: filter-instances, name: instanceIDs}]
+    message: "This workfed"
 
 
