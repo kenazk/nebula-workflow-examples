@@ -1,0 +1,603 @@
+version: v1
+description: Deploy Sock Shop demo to Azure Kubernetes Service (AKS)
+
+parameters:
+  location:
+    description: Azure location to deploy cluster to
+  resourcegroupname:
+    description: Azure resource group to create and deploy cluster into 
+  slack_channel:
+    description: Slack channel (include preceding hashtag)
+  slack_message:
+    description: Slack message
+
+steps:
+- name: provision-resource-group
+  image: projectnebula/azureresourcemanager-deployer
+  spec:
+    azure:
+      tenantID: !Secret tenantid 
+      username: !Secret username 
+      password: !Secret password 
+    deploymentName: nebula-resource-group
+    location: !Parameter location
+    templateFile: example-workflows/aks-sock-shop/templates/aks-resourcegroup.json
+    git: 
+      name: nebula-workflow-examples  
+      branch: master
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+    parameters:
+      rgName: !Parameter resourcegroupname
+      rgLocation: !Parameter location
+
+- name: provision-aks 
+  dependsOn: provision-resource-group
+  image: projectnebula/azureresourcemanager-deployer
+  spec:
+    azure:
+      tenantID: !Secret tenantid 
+      username: !Secret username 
+      password: !Secret password 
+    deploymentName: nebula-aks-deployment 
+    resourceGroup: !Parameter resourcegroupname 
+    templateFile: example-workflows/aks-sock-shop/templates/aks-cluster.json
+    git: 
+      name: nebula-workflow-examples  
+      branch: master
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+    parameters:
+      clusterName: nebula-aks
+      dnsPrefix: nebula-1352
+      linuxAdminUsername: aksuser
+      sshRSAPublicKey: !Secret publickey
+      servicePrincipalClientId: !Secret username
+      servicePrincipalClientSecret: !Secret password
+  
+- name: extract-cluster-credentials
+  dependsOn: provision-aks
+  image: projectnebula/azureresourcemanager-deployer
+  spec:
+    azure:
+      tenantID: !Secret tenantid 
+      username: !Secret username 
+      password: !Secret password
+    deploymentName: nebula-aks-deployment 
+    resourceGroup: !Parameter resourcegroupname
+  input: 
+  -  curl -o "/bin/yq" -LSsf https://github.com/mikefarah/yq/releases/download/2.4.1/yq_linux_amd64 && 
+     chmod +x "/bin/yq" &&
+     TENANT_ID="$( ni get -p '{ .azure.tenantID }' )" && 
+     USERNAME="$( ni get -p '{ .azure.username }' )" &&
+     PASSWORD="$( ni get -p '{ .azure.password }' )" && 
+     DEPLOYMENT_NAME="$( ni get -p '{ .deploymentName }' )" &&
+     RESOURCE_GROUP="$( ni get -p '{ .resourceGroup }' )" && 
+     az login --service-principal --tenant "${TENANT_ID}" --username "${USERNAME}" --password "${PASSWORD}" &&
+     az group deployment show -n ${DEPLOYMENT_NAME} -g ${RESOURCE_GROUP} | jq -r '.properties.outputs.clustercredentials.value.kubeconfigs | .[].value' | base64 -d > output.yaml &&
+     ni output set --key "k8s_endpoint" --value "$( yq r output.yaml 'clusters[0].cluster.server' )" &&
+     ni output set --key "k8s_master_auth_cluster_ca_certificate" --value "$( yq r output.yaml 'clusters[0].cluster.certificate-authority-data' )" &&
+     ni output set --key "k8s_current_access_token" --value "$( yq r output.yaml 'users[0].user.token' )" 
+
+- name: create-namespace
+  dependsOn: extract-cluster-credentials
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/sock-shop-ns.yaml
+    namespace: default
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+
+- name: carts-db-deployment 
+  dependsOn: create-namespace
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/carts-db-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: carts-db-service 
+  dependsOn: carts-db-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/carts-db-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+
+- name: carts-deployment 
+  dependsOn: carts-db-service
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/carts-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+  
+- name: carts-service
+  dependsOn: carts-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/carts-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: catalogue-db-deployment
+  dependsOn: create-namespace 
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/catalogue-db-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: catalogue-db-service 
+  dependsOn: catalogue-db-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/catalogue-db-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: catalogue-deployment 
+  dependsOn: catalogue-db-service
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/catalogue-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: catalogue-service 
+  dependsOn: catalogue-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/catalogue-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+
+- name: front-end-deployment
+  dependsOn: create-namespace
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/front-end-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+
+- name: front-end-service
+  dependsOn: front-end-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/front-end-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: orders-db-deployment
+  dependsOn: create-namespace
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/orders-db-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+  
+
+- name: orders-db-service
+  dependsOn: orders-db-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/orders-db-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: orders-deployment
+  dependsOn: orders-db-service
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/orders-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: orders-service
+  dependsOn: orders-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/orders-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: payment-deployment
+  dependsOn: create-namespace
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/payment-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: payment-service
+  dependsOn: payment-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/payment-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: queue-master-deployment
+  dependsOn: create-namespace
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/queue-master-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+
+- name: queue-master-service
+  dependsOn: queue-master-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/queue-master-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: rabbitmq-deployment
+  dependsOn: create-namespace
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/rabbitmq-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: rabbitmq-service
+  dependsOn: rabbitmq-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/rabbitmq-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: session-db-deployment
+  dependsOn: create-namespace
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/session-db-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: session-db-service
+  dependsOn: session-db-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/session-db-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: shipping-deployment
+  dependsOn: create-namespace
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/shipping-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: shipping-service
+  dependsOn: shipping-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/shipping-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: user-db-deployment
+  dependsOn: create-namespace
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/user-db-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: user-db-service
+  dependsOn: user-db-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/user-db-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: user-deployment
+  dependsOn: user-db-service
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/user-dep.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: user-service
+  dependsOn: user-deployment
+  image: projectnebula/kubectl
+  spec:
+    command: apply
+    file: example-workflows/aks-sock-shop/k8s/user-svc.yaml
+    namespace: sock-shop
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    git:
+      name: nebula-workflow-examples
+      repository: https://github.com/puppetlabs/nebula-workflow-examples.git
+      branch: master 
+
+- name: output-url
+  dependsOn: slack-notify
+  image: projectnebula/kubectl
+  spec:
+    cluster:
+      name: nebula-aks
+      url: !Output [extract-cluster-credentials, k8s_endpoint]
+      cadata: !Output [extract-cluster-credentials, k8s_master_auth_cluster_ca_certificate]
+      token: !Output [extract-cluster-credentials, k8s_current_access_token]
+    confetti: true
+  input: 
+  - curl -o "/bin/yq" -LSsf https://github.com/mikefarah/yq/releases/download/2.4.1/yq_linux_amd64 && 
+    chmod +x "/bin/yq" &&
+    CLUSTER=$(ni get -p {.cluster.name}) &&
+    KUBECONFIG=/workspace/${CLUSTER}/kubeconfig &&
+    ni cluster config &&
+    ni log info "The Sock Shop demo is deployed at:" &&
+    ni log info "http://$( kubectl --kubeconfig ${KUBECONFIG} -n sock-shop get service front-end -o yaml | yq r - 'status.loadBalancer.ingress[0].ip' )"
+      
+  
+- name: slack-notify
+  dependsOn: front-end-service
+  image: projectnebula/slack-notification
+  spec:
+    apitoken: !Secret slacktoken
+    channel: !Parameter slack_channel
+    message: !Parameter slack_message

@@ -13,6 +13,15 @@ spec:
    selector:
      run: nebula-example
 ---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: ingress
+spec:
+  backend:
+    serviceName: nebula-example
+    servicePort: 80
+---  
 apiVersion: extensions/v1beta1
 kind: Deployment
 metadata:

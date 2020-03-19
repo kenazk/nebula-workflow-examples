@@ -20,7 +20,7 @@ variable "google-credentials" {
 
 variable "initial_node_count" {
   description = "Number of worker VMs to initially create"
-  default = 1
+  default = 2
 }
 variable "node_machine_type" {
   description = "GCE machine type"
