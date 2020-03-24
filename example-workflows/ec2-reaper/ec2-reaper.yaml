@@ -39,11 +39,14 @@ steps:
 - name: terminate-instances
   dependsOn: termination-approval
   image: projectnebula/ec2-terminate-instances
+  when: 
+    - !Fn.equals [!Parameter dryRun, 'false']
   spec:
     aws: *aws
     instanceIDs: !Output {from: filter-instances, name: instanceIDs}
 - name: notify-dryRun 
   image: projectnebula/slack-notification
+  dependsOn: filter-instances
   when:
   - !Fn.equals [!Parameter dryRun, 'true']
   spec: 
