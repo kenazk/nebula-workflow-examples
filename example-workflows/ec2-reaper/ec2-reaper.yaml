@@ -30,9 +30,14 @@ steps:
     lifetimeTag: !Parameter lifetimeTag
     instances: !Output {from: describe-instances, name: instances}
   inputFile: workflow/filter-instances.py
+- name: termination-approval
+  description: Wait for approval to terminate instances 
+  type: approval
+  dependsOn: filter-instances
+  when: 
+    - !Fn.equals [!Parameter dryRun, 'false']
 - name: terminate-instances
-  when:
-  - !Fn.equals [!Parameter dryRun, 'false']
+  dependsOn: termination-approval
   image: projectnebula/ec2-terminate-instances
   spec:
     aws: *aws
@@ -44,6 +49,6 @@ steps:
   spec: 
     apitoken: !Secret slack-token 
     channel: "#nebula-workflows"
-    message: !Fn.concat ["[EC2 Reaper Dry Run] Instances that would be terminated: ", !Output {from: filter-instances, name: instanceIDs}]
+    message: !Fn.concat ["[EC2 Reaper Dry Run] Instances that would be terminated: ", "Make up some instances here"]
 
 
